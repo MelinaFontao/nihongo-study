@@ -809,8 +809,8 @@ async function generarEjercicios() {
       source: { type: 'base64', media_type: 'image/jpeg', data: b64 }
     }));
 
-    // PASO 2: Un solo request — Claude analiza y devuelve todo estructurado
-    setProgress('generar', 30, 'Analizando la clase...');
+    // PASO 2: UN solo request con el prompt exacto que funciona
+    setProgress('generar', 30, 'Analizando la clase y generando ejercicios...');
 
     const prompt = [{
       role: 'user',
@@ -818,33 +818,37 @@ async function generarEjercicios() {
         ...imageContent,
         {
           type: 'text',
-          text: `Sos un profesor de japonés. Analizá esta clase de Komori Project y devolvé la estructura para generar material de práctica.
+          text: `Necesito tu ayuda para practicar japonés. Te paso el PDF de una clase de Komori Project y necesito que me hagas ejercicios para practicar.
 
-REGLA FUNDAMENTAL: Cada concepto gramatical o de vocabulario = 1 solo tema. Los usos/variantes de un mismo concepto son SUBTEMAS del mismo tema, NO temas separados.
+Tu tarea:
+1. Identificá los TEMAS PRINCIPALES de la clase. Un tema principal es UN concepto gramatical o de vocabulario completo. Por ejemplo "Partícula の" es UN solo tema aunque tenga 4 usos distintos — esos usos son parte del mismo tema, no temas separados.
+2. Por cada tema principal, hacé 50 ejercicios mezclando japonés→español y español→japonés.
+3. El primer ejercicio (00) debe estar RESUELTO como ejemplo de estructura. Los ejercicios 01 al 50 NO tienen respuesta — los completa el alumno.
+4. NO incluyas como tema: páginas de portada, bienvenida, tarea (しゅくだい), páginas de práctica (れんしゅう), ni imágenes decorativas.
 
-EJEMPLO de la clase sobre Partícula の:
-- CORRECTO: 1 tema "Partícula の" con subtemas ["Uso 1: modificar sustantivo", "Uso 2: de qué trata", "Uso 3: posesión", "Uso 4: origen", "Cómo preguntar"]
-- INCORRECTO: 5 temas separados
+IMPORTANTE: Si ves "Primer uso", "Segundo uso", "Tercer uso", "Cuarto uso" de algo → eso es UN solo tema con subtemas, no temas separados.
 
-NO incluyas como tema: páginas de bienvenida, tarea (しゅくだい), ejercicios de práctica (れんしゅう), títulos de sección, ni imágenes decorativas.
-
-Respondé SOLO en JSON válido sin markdown:
+Respondé SOLO en JSON válido sin markdown ni texto extra:
 {
   "temas": [
     {
       "nombre": "Partícula の",
-      "vocabulario": [{"jp": "しゃいん", "es": "empleado"}, {"jp": "がくせい", "es": "estudiante"}],
+      "vocabulario": [
+        {"jp": "しゃいん", "es": "empleado"},
+        {"jp": "がくせい", "es": "estudiante"},
+        {"jp": "せんせい", "es": "profesor/a"}
+      ],
       "subtemas": [
-        {
-          "nombre": "Uso 1: Modificar sustantivo",
-          "descripcion": "S1 califica o modifica S2",
-          "ejemplos": ["やまださんは トヨタの しゃいんです → El señor Yamada es empleado de Toyota"]
-        },
-        {
-          "nombre": "Uso 2: De qué trata el objeto", 
-          "descripcion": "S1 indica de qué trata S2",
-          "ejemplos": ["これは まんがの ざっしです → Esto es una revista de manga"]
-        }
+        {"nombre": "Uso 1: Modificar sustantivo", "descripcion": "S1 califica o modifica S2"},
+        {"nombre": "Uso 2: De qué trata el objeto", "descripcion": "S1 indica de qué trata S2"},
+        {"nombre": "Uso 3: Posesión", "descripcion": "S1 indica a quién pertenece S2"},
+        {"nombre": "Uso 4: Origen", "descripcion": "S1 indica dónde fue fabricado S2"},
+        {"nombre": "Cómo preguntar con の", "descripcion": "Preguntas con なん、だれ、どこ"}
+      ],
+      "ejercicios": [
+        {"num": "00", "subtema": "General", "tipo": "jp→es", "enunciado": "やまださんは トヨタの しゃいんです。", "respuesta": "El señor Yamada es empleado de Toyota.", "resuelto": true},
+        {"num": "01", "subtema": "Uso 1: Modificar sustantivo", "tipo": "jp→es", "enunciado": "パトリシオさんは にほんごの がくせいです。", "respuesta": "", "resuelto": false},
+        {"num": "02", "subtema": "Uso 1: Modificar sustantivo", "tipo": "es→jp", "enunciado": "Luca es profesora de inglés.", "respuesta": "", "resuelto": false}
       ]
     }
   ]
@@ -853,75 +857,24 @@ Respondé SOLO en JSON válido sin markdown:
       ]
     }];
 
-    const planResult = await callClaude(prompt, 'claude-haiku-4-5');
-    let plan;
+    const result = await callClaude(prompt, 'claude-haiku-4-5');
+    let data;
     try {
-      plan = JSON.parse(planResult.replace(/\`\`\`json|\`\`\`/g, '').trim());
+      data = JSON.parse(result.replace(/```json|```/g, '').trim());
     } catch(e) {
-      throw new Error('No se pudo analizar la clase. Intentá de nuevo.');
+      throw new Error('No se pudo procesar la respuesta. Intentá de nuevo.');
     }
 
-    console.log('Temas detectados:', plan.temas.map(t => t.nombre));
+    console.log('Temas generados:', data.temas.map(t => t.nombre));
 
-    // PASO 3: Por cada tema, generar ejercicios (sin imágenes = barato)
+    // Mostrar resultados
     state.generatedThemes = [];
     const container = document.getElementById('themes-container');
     container.innerHTML = '';
 
-    for (let i = 0; i < plan.temas.length; i++) {
-      const tema = plan.temas[i];
-      const pct = 40 + Math.round(((i + 1) / plan.temas.length) * 55);
-      setProgress('generar', pct, `Generando: ${tema.nombre} (${i+1}/${plan.temas.length})...`);
-
-      const numSubtemas = (tema.subtemas || []).length || 1;
-      const totalEjs = numSubtemas * 50 + 1;
-
-      const subtemaTexto = (tema.subtemas || []).map((s, idx) =>
-        `[SECCIÓN ${idx+1}] ${s.nombre}: ${s.descripcion}\nEjemplos: ${(s.ejemplos||[]).join(' | ')}\n→ Generá 50 ejercicios de esta sección`
-      ).join('\n\n');
-
-      const vocabTexto = (tema.vocabulario || []).map(v => `${v.jp}=${v.es}`).join(', ');
-
-      const ejPrompt = [{
-        role: 'user',
-        content: [{
-          type: 'text',
-          text: `Generá ejercicios de japonés para un alumno de Komori Project Nivel 1.
-
-TEMA: ${tema.nombre}
-VOCABULARIO: ${vocabTexto}
-
-${subtemaTexto}
-
-REGLAS:
-- Ejercicio "00": RESUELTO como ejemplo (1 solo, al principio)
-- Ejercicios "01" a "${String(totalEjs - 1).padStart(2,'0')}": SIN respuesta (el alumno los completa)
-- Mezclá "jp→es" y "es→jp"
-- Sin romaji. Solo hiragana/katakana/kanji y español
-- Campo "subtema" con el nombre de la sección correspondiente
-
-Respondé SOLO en JSON válido sin markdown:
-{
-  "titulo": "${tema.nombre} — Práctica",
-  "vocabulario": [{"jp": "しゃいん", "es": "empleado"}],
-  "ejercicios": [
-    {"num": "00", "subtema": "General", "tipo": "jp→es", "enunciado": "やまださんは トヨタの しゃいんです。", "respuesta": "El señor Yamada es empleado de Toyota.", "resuelto": true},
-    {"num": "01", "subtema": "${tema.subtemas?.[0]?.nombre || tema.nombre}", "tipo": "jp→es", "enunciado": "...", "respuesta": "", "resuelto": false}
-  ]
-}`
-        }]
-      }];
-
-      const ejResult = await callClaude(ejPrompt, 'claude-haiku-4-5');
-      let ejData;
-      try {
-        ejData = JSON.parse(ejResult.replace(/\`\`\`json|\`\`\`/g, '').trim());
-      } catch(e) {
-        console.error('Error parseando:', tema.nombre);
-        continue;
-      }
-
-      state.generatedThemes.push({ tema: tema.nombre, data: ejData });
+    for (const tema of data.temas) {
+      const totalEjs = (tema.ejercicios || []).length;
+      state.generatedThemes.push({ tema: tema.nombre, data: tema });
 
       const card = document.createElement('div');
       card.className = 'theme-card';
@@ -953,7 +906,8 @@ Respondé SOLO en JSON válido sin markdown:
 
 // ── DOWNLOAD PDF (HTML→print) ──
 function downloadPDF(idx) {
-  const { tema, data } = state.generatedThemes[idx];
+  const { tema, data: temaData } = state.generatedThemes[idx];
+  const data = { titulo: temaData.nombre + ' — Práctica', vocabulario: temaData.vocabulario || [], ejercicios: temaData.ejercicios || [] };
 
   const vocabHTML = (data.vocabulario || []).map(v =>
     `<span class="vocab-item"><span class="vocab-jp">${v.jp}</span> = ${v.es}</span>`
