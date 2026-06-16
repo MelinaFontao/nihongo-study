@@ -450,6 +450,62 @@
     margin-bottom: 10px;
   }
 
+  /* ── API KEY MODAL ── */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(10,0,26,0.85);
+    backdrop-filter: blur(6px);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .modal-overlay.visible { display: flex; }
+  .modal {
+    background: var(--purple-900);
+    border: 1px solid rgba(168,85,247,0.3);
+    border-radius: 20px;
+    padding: 28px 24px;
+    width: 100%;
+    max-width: 440px;
+  }
+  .modal h2 { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  .modal p { font-size: 13px; color: var(--purple-400); margin-bottom: 20px; line-height: 1.5; }
+  .modal input {
+    width: 100%;
+    padding: 14px 16px;
+    border-radius: 12px;
+    border: 1.5px solid rgba(168,85,247,0.3);
+    background: rgba(255,255,255,0.05);
+    color: white;
+    font-size: 13px;
+    font-family: monospace;
+    margin-bottom: 14px;
+    outline: none;
+  }
+  .modal input:focus { border-color: var(--purple-500); }
+  .config-btn {
+    position: fixed;
+    bottom: 28px;
+    right: 20px;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(107,33,168,0.4);
+    border: 1px solid rgba(168,85,247,0.3);
+    color: var(--purple-400);
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 150;
+    transition: all 0.2s;
+  }
+  .config-btn:hover { background: rgba(107,33,168,0.6); color: white; }
+
   /* scrollbar */
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -460,6 +516,19 @@
 </style>
 </head>
 <body>
+
+<!-- API KEY MODAL -->
+<div class="modal-overlay" id="api-modal">
+  <div class="modal">
+    <h2>🔑 API Key</h2>
+    <p>Ingresá tu API key de Anthropic. Se guarda solo en tu dispositivo, nunca se sube a ningún servidor.</p>
+    <input type="password" id="api-key-input" placeholder="sk-ant-..." />
+    <button class="btn btn-primary" onclick="saveApiKey()">Guardar y continuar</button>
+    <p style="font-size:11px;color:var(--purple-400);text-align:center;margin-top:10px;opacity:0.7">Obtenés tu key en console.anthropic.com</p>
+  </div>
+</div>
+
+<button class="config-btn" onclick="showApiKeyModal()" title="Configurar API Key">⚙️</button>
 
 <div class="header">
   <div class="header-icon">🦇</div>
@@ -642,11 +711,16 @@ function hideError(id) {
 
 // ── API CALL ──
 async function callClaude(messages, model = 'claude-haiku-4-5') {
+  const apiKey = localStorage.getItem('anthropic_api_key');
+  if (!apiKey) {
+    showApiKeyModal();
+    throw new Error('Necesitás configurar tu API key primero.');
+  }
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': 'REDACTED',
+      'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true'
     },
@@ -863,6 +937,19 @@ function downloadPDF(idx) {
 </style>
 </head>
 <body>
+<!-- API KEY MODAL -->
+<div class="modal-overlay" id="api-modal">
+  <div class="modal">
+    <h2>🔑 API Key</h2>
+    <p>Ingresá tu API key de Anthropic. Se guarda solo en tu dispositivo, nunca se sube a ningún servidor.</p>
+    <input type="password" id="api-key-input" placeholder="sk-ant-..." />
+    <button class="btn btn-primary" onclick="saveApiKey()">Guardar y continuar</button>
+    <p style="font-size:11px;color:var(--purple-400);text-align:center;margin-top:10px;opacity:0.7">Obtenés tu key en console.anthropic.com</p>
+  </div>
+</div>
+
+<button class="config-btn" onclick="showApiKeyModal()" title="Configurar API Key">⚙️</button>
+
 <div class="header">
   <h1>🦇 ${data.titulo || tema}</h1>
   <p>Komori Project · Nivel 1 · 51 ejercicios (1 ejemplo + 50 para resolver)</p>
@@ -1006,6 +1093,26 @@ function renderHistorial() {
     </div>
   `).join('');
 }
+
+// ── API KEY ──
+function showApiKeyModal() {
+  document.getElementById('api-modal').classList.add('visible');
+  const saved = localStorage.getItem('anthropic_api_key');
+  if (saved) document.getElementById('api-key-input').value = saved;
+}
+function saveApiKey() {
+  const key = document.getElementById('api-key-input').value.trim();
+  if (!key.startsWith('sk-ant-')) {
+    alert('La key debe empezar con sk-ant-');
+    return;
+  }
+  localStorage.setItem('anthropic_api_key', key);
+  document.getElementById('api-modal').classList.remove('visible');
+}
+// Mostrar modal si no hay key guardada
+window.addEventListener('load', () => {
+  if (!localStorage.getItem('anthropic_api_key')) showApiKeyModal();
+});
 
 // ── DRAG AND DROP (iPad support) ──
 ['upload-clase','upload-resuelto'].forEach(id => {
