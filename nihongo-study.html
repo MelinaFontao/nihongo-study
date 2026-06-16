@@ -7,13 +7,6 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="にほんご">
 <title>にほんご 練習</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script>
-  if (window.pdfjsLib) {
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  }
-</script>
 
 <!-- PWA icon via inline SVG as data URI -->
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%236B21A8'/%3E%3Ctext y='72' x='50' text-anchor='middle' font-size='60' font-family='serif'%3E🦇%3C/text%3E%3C/svg%3E">
@@ -672,17 +665,21 @@ function switchTab(name) {
 // Carga el PDF con pdf.js, renderiza cada página en canvas a baja resolución
 // y lo reensambla como imágenes JPEG comprimidas → muchos menos tokens
 async function comprimirPDF(file, progressCallback) {
-  // Esperar a que pdfjsLib esté disponible (se carga en el <head>)
-  let intentos = 0;
-  while (!window.pdfjsLib && intentos < 20) {
-    await new Promise(r => setTimeout(r, 300));
-    intentos++;
+  // Cargar pdf.js dinámicamente
+  if (!window.pdfjsLib) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   }
-  if (!window.pdfjsLib) throw new Error('No se pudo cargar el lector de PDF. Recargá la página.');
 
   const arrayBuffer = await file.arrayBuffer();
-  const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer, disableFontFace: true });
-  const pdf = await loadingTask.promise;
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   const totalPages = pdf.numPages;
   const images = [];
 
@@ -824,16 +821,26 @@ async function generarEjercicios() {
         {
           type: 'text',
           text: `Analizá estas imágenes de una clase de japonés (Komori Project, Nivel 1).
-Identificá todos los temas gramaticales o de vocabulario que se ven en la clase.
+Identificá los TEMAS PRINCIPALES de la clase. Un tema principal es una partícula, estructura gramatical o área de vocabulario. Los distintos USOS de un mismo tema NO son temas separados — son subtemas del mismo tema.
+
+Ejemplo CORRECTO: si la clase trata la partícula の con 4 usos → es 1 solo tema con 4 subtemas.
+Ejemplo INCORRECTO: hacer un tema por cada uso de の → eso está MAL.
+
 Respondé SOLO en JSON, sin markdown, sin explicaciones:
 {
   "clase": "nombre de la clase",
   "temas": [
     {
-      "nombre": "nombre del tema en español",
-      "descripcion": "descripción breve de qué es el tema",
-      "vocabulario": ["palabra1=significado1", "palabra2=significado2"],
-      "ejemplos_de_clase": ["ejemplo japonés 1 → traducción", "ejemplo japonés 2 → traducción"]
+      "nombre": "nombre del tema principal en español (ej: Partícula の)",
+      "descripcion": "descripción breve del tema principal",
+      "subtemas": [
+        {
+          "nombre": "nombre del subtema (ej: Uso 1 - Modificar sustantivo)",
+          "descripcion": "descripción del subtema",
+          "ejemplos": ["ejemplo japonés → traducción"]
+        }
+      ],
+      "vocabulario": ["palabra1=significado1", "palabra2=significado2"]
     }
   ]
 }`
@@ -862,26 +869,36 @@ Respondé SOLO en JSON, sin markdown, sin explicaciones:
       const pct = 30 + Math.round(((i+1)/temas.length) * 60);
       setProgress('generar', pct, `Generando ejercicios: ${tema.nombre}...`);
 
+      // Calcular total de ejercicios: 50 por subtema + 1 ejemplo
+      const numSubtemas = (tema.subtemas || []).length || 1;
+      const totalEjercicios = numSubtemas * 50 + 1;
+      const subtemasList = (tema.subtemas || []).map(s => `- ${s.nombre}: ${s.descripcion}. Ejemplos: ${(s.ejemplos||[]).join(' | ')}`).join('\n');
+
       const ejerciciosPrompt = [{
         role: 'user',
         content: [
           ...imageContent,
           {
             type: 'text',
-            text: `Sos un profesor de japonés experto. Basándote en esta clase de Komori Project, generá 51 ejercicios sobre el tema: "${tema.nombre}".
+            text: `Sos un profesor de japonés experto. Basándote en esta clase de Komori Project, generá ejercicios sobre el tema principal: "${tema.nombre}".
 
-REGLAS IMPORTANTES:
-1. El ejercicio 00 debe estar RESUELTO como ejemplo de estructura. Los ejercicios 01 a 50 NO tienen respuesta.
-2. Mezclá japonés→español y español→japonés en los ejercicios 01-50.
+ESTRUCTURA:
+- 1 ejercicio resuelto (num: "00") como ejemplo general del tema
+- 50 ejercicios por cada subtema listado abajo, numerados correlativamente desde 01
+- Total: ${totalEjercicios} ejercicios
+
+SUBTEMAS (generá 50 ejercicios de cada uno, agrupados):
+${subtemasList}
+
+REGLAS:
+1. El ejercicio 00 está RESUELTO como ejemplo. Los demás NO tienen respuesta.
+2. Mezclá japonés→español y español→japonés.
 3. NO uses romaji. Solo japonés (hiragana/katakana/kanji) y español.
-4. Los primeros 10 ejercicios son más simples. Del 11 al 50 son más variados y complejos.
-5. Usá el vocabulario exacto que aparece en la clase.
-6. El vocabulario de ayuda va al principio.
+4. Dentro de cada subtema: primeros ejercicios simples, últimos más complejos.
+5. Usá el vocabulario exacto de la clase.
+6. Incluí una sección de vocabulario al principio.
 
-Tema: ${tema.nombre}
-Descripción: ${tema.descripcion}
 Vocabulario de la clase: ${tema.vocabulario.join(', ')}
-Ejemplos de la clase: ${tema.ejemplos_de_clase.join(' | ')}
 
 Respondé SOLO en JSON sin markdown:
 {
@@ -890,6 +907,7 @@ Respondé SOLO en JSON sin markdown:
   "ejercicios": [
     {
       "num": "00",
+      "subtema": "nombre del subtema o General",
       "tipo": "jp→es",
       "enunciado": "texto en japonés",
       "respuesta": "traducción al español (SOLO para el 00)",
@@ -897,6 +915,7 @@ Respondé SOLO en JSON sin markdown:
     },
     {
       "num": "01",
+      "subtema": "nombre del subtema",
       "tipo": "jp→es",
       "enunciado": "texto",
       "respuesta": "",
@@ -925,7 +944,7 @@ Respondé SOLO en JSON sin markdown:
       card.innerHTML = `
         <div class="theme-header">
           <div class="theme-name">${tema.nombre}</div>
-          <div class="theme-badge">51 ejercicios</div>
+          <div class="theme-badge">${totalEjercicios} ejercicios</div>
         </div>
         <button class="btn-download" onclick="downloadPDF(${state.generatedThemes.length - 1})">
           <span>⬇️</span> Descargar PDF
@@ -955,10 +974,18 @@ function downloadPDF(idx) {
     `<span class="vocab-item"><span class="vocab-jp">${v.jp}</span> = ${v.es}</span>`
   ).join('');
 
-  const ejerciciosHTML = (data.ejercicios || []).map(e => {
+  // Agrupar ejercicios por subtema para mostrar secciones
+  let ejerciciosHTML = '';
+  let subtemaActual = null;
+  (data.ejercicios || []).forEach(e => {
     const tipoLabel = e.tipo === 'jp→es' ? 'japonés → español' : 'español → japonés';
     const isResuelto = e.resuelto || e.num === '00';
-    return `
+    // Mostrar encabezado de subtema cuando cambia
+    if (e.subtema && e.subtema !== subtemaActual && !isResuelto) {
+      subtemaActual = e.subtema;
+      ejerciciosHTML += `<div class="subtema-header">【 ${e.subtema} 】</div>`;
+    }
+    ejerciciosHTML += `
       <div class="ejercicio ${isResuelto ? 'resuelto' : ''}">
         <div class="ej-header">
           <span class="ej-num">${String(e.num).padStart(2,'0')}</span>
@@ -971,7 +998,7 @@ function downloadPDF(idx) {
           : !isResuelto ? `<div class="ej-linea">_______________________________________________</div>` : ''
         }
       </div>`;
-  }).join('');
+  });
 
   const html = `<!DOCTYPE html>
 <html lang="es">
@@ -999,6 +1026,7 @@ function downloadPDF(idx) {
   .ej-enunciado { font-family: 'Noto Sans JP', sans-serif; font-size: 16px; color: #1e1b3a; line-height: 1.6; }
   .ej-respuesta { font-size: 14px; color: #6B21A8; font-weight: 500; margin-top: 8px; font-family: 'Noto Sans JP', sans-serif; }
   .ej-linea { margin-top: 10px; color: #c4b5fd; font-size: 16px; letter-spacing: 0.1em; }
+  .subtema-header { font-size: 15px; font-weight: 700; color: #6B21A8; background: #f3e8ff; border-radius: 8px; padding: 10px 16px; margin: 24px 0 12px; border-left: 4px solid #6B21A8; }
   .footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e9d5ff; text-align: center; font-size: 11px; color: #9333ea; }
   @media print { body { padding: 20px; } }
 </style>
