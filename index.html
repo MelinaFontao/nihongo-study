@@ -709,29 +709,54 @@ function hideError(id) {
   document.getElementById('error-' + id).classList.remove('visible');
 }
 
-// ── API CALL ──
-async function callClaude(messages, model = 'claude-haiku-4-5') {
+// ── API CALL con retry y rate limit handling ──
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function callClaude(messages, model = 'claude-haiku-4-5', retries = 4) {
   const apiKey = localStorage.getItem('anthropic_api_key');
   if (!apiKey) {
     showApiKeyModal();
     throw new Error('Necesitás configurar tu API key primero.');
   }
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({ model, max_tokens: 8000, messages })
-  });
-  if (!response.ok) {
+
+  for (let attempt = 0; attempt < retries; attempt++) {
+    // Esperar entre requests para no saturar el rate limit
+    if (attempt > 0) {
+      const waitSec = 15 * attempt;
+      const progressId = document.getElementById('progress-generar').classList.contains('visible') ? 'generar' : 'corregir';
+      for (let s = waitSec; s > 0; s--) {
+        setProgress(progressId, null, `Rate limit alcanzado, esperando ${s}s antes de reintentar...`);
+        await sleep(1000);
+      }
+    }
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({ model, max_tokens: 8000, messages })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.content[0].text;
+    }
+
     const err = await response.json();
+    const isRateLimit = response.status === 429 || (err.error?.message || '').includes('rate limit');
+
+    if (isRateLimit && attempt < retries - 1) {
+      console.warn('Rate limit, reintentando...', attempt + 1);
+      continue;
+    }
+
     throw new Error(err.error?.message || 'Error en la API');
   }
-  const data = await response.json();
-  return data.content[0].text;
+  throw new Error('Se alcanzó el rate limit varias veces. Esperá 1 minuto y volvé a intentar.');
 }
 
 // ── GENERAR EJERCICIOS ──
