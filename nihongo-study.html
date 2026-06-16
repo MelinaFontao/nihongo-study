@@ -799,48 +799,51 @@ async function generarEjercicios() {
   document.getElementById('btn-generar').disabled = true;
 
   try {
-    // PASO 1: Detectar temas
-    setProgress('generar', 15, 'Leyendo la clase...');
-
-    // Comprimir PDF antes de mandarlo
-    setProgress('generar', 10, 'Comprimiendo PDF para ahorrar tokens...');
+    // PASO 1: Comprimir PDF
+    setProgress('generar', 5, 'Comprimiendo PDF...');
     const paginas = await comprimirPDF(state.claseFile, (i, total) => {
-      setProgress('generar', 10 + Math.round((i/total)*15), `Comprimiendo página ${i}/${total}...`);
+      setProgress('generar', 5 + Math.round((i/total)*15), `Comprimiendo página ${i}/${total}...`);
     });
-
-    // Armar content con todas las páginas como imágenes
     const imageContent = paginas.map(b64 => ({
       type: 'image',
       source: { type: 'base64', media_type: 'image/jpeg', data: b64 }
     }));
 
-    const detectPrompt = [{
+    // PASO 2: Detectar estructura completa en UN solo request
+    // Le pedimos el plan completo: temas principales + subtemas + vocabulario
+    // SIN generar ejercicios todavía (para no sobrepasar tokens)
+    setProgress('generar', 25, 'Analizando la clase...');
+    const planPrompt = [{
       role: 'user',
       content: [
         ...imageContent,
         {
           type: 'text',
-          text: `Analizá estas imágenes de una clase de japonés (Komori Project, Nivel 1).
-Identificá los TEMAS PRINCIPALES de la clase. Un tema principal es una partícula, estructura gramatical o área de vocabulario. Los distintos USOS de un mismo tema NO son temas separados — son subtemas del mismo tema.
+          text: `Sos un profesor de japonés. Analizá esta clase de Komori Project Nivel 1.
 
-Ejemplo CORRECTO: si la clase trata la partícula の con 4 usos → es 1 solo tema con 4 subtemas.
-Ejemplo INCORRECTO: hacer un tema por cada uso de の → eso está MAL.
+TAREA: Identificá los temas de la clase y organizalos en TEMAS PRINCIPALES con sus subtemas.
 
-Respondé SOLO en JSON, sin markdown, sin explicaciones:
+REGLA MÁS IMPORTANTE: Un tema principal = un concepto gramatical o de vocabulario.
+Los distintos USOS o VARIANTES de un mismo concepto son SUBTEMAS, NO temas separados.
+
+EJEMPLOS:
+✅ CORRECTO: Clase sobre partícula の → 1 tema "Partícula の" con subtemas "Uso 1: modificar sustantivo", "Uso 2: de qué trata", "Uso 3: posesión", "Uso 4: origen"
+❌ INCORRECTO: 4 temas separados, uno por uso
+
+✅ CORRECTO: Clase con partícula の + números → 2 temas: "Partícula の" y "Números"
+❌ INCORRECTO: 6 temas separados
+
+Respondé SOLO en JSON válido, sin markdown:
 {
-  "clase": "nombre de la clase",
+  "clase": "Clase 09 - Partícula の",
   "temas": [
     {
-      "nombre": "nombre del tema principal en español (ej: Partícula の)",
-      "descripcion": "descripción breve del tema principal",
+      "nombre": "Partícula の",
       "subtemas": [
-        {
-          "nombre": "nombre del subtema (ej: Uso 1 - Modificar sustantivo)",
-          "descripcion": "descripción del subtema",
-          "ejemplos": ["ejemplo japonés → traducción"]
-        }
+        {"nombre": "Uso 1: Modificar sustantivo", "ejemplos": ["やまださんは トヨタの しゃいんです → El señor Yamada es empleado de Toyota"]},
+        {"nombre": "Uso 2: De qué trata el objeto", "ejemplos": ["これは まんがの ざっしです → Esto es una revista de manga"]}
       ],
-      "vocabulario": ["palabra1=significado1", "palabra2=significado2"]
+      "vocabulario": ["しゃいん=empleado", "がくせい=estudiante", "せんせい=profesor"]
     }
   ]
 }`
@@ -848,146 +851,112 @@ Respondé SOLO en JSON, sin markdown, sin explicaciones:
       ]
     }];
 
-    setProgress('generar', 25, 'Identificando temas...');
-    const detectResult = await callClaude(detectPrompt);
-
-    let parsedRaw;
+    const planResult = await callClaude(planPrompt, 'claude-haiku-4-5');
+    let plan;
     try {
-      parsedRaw = JSON.parse(detectResult.replace(/```json|```/g, '').trim());
+      plan = JSON.parse(planResult.replace(/```json|```/g, '').trim());
     } catch(e) {
-      throw new Error('No se pudo parsear la respuesta. Intentá de nuevo.');
+      throw new Error('No se pudo analizar la clase. Intentá de nuevo.');
     }
 
-    // PASO DE CONSOLIDACIÓN: si hay más de 3 temas, pedirle que los agrupe
-    setProgress('generar', 35, 'Consolidando temas...');
-    let parsed = parsedRaw;
-    if (parsedRaw.temas && parsedRaw.temas.length > 3) {
-      const consolidarPrompt = [{
-        role: 'user',
-        content: [{
-          type: 'text',
-          text: `Tengo estos temas detectados de una clase de japonés:
-${JSON.stringify(parsedRaw.temas.map(t => t.nombre))}
+    console.log('Plan detectado RAW:', JSON.stringify(plan.temas.map(t => t.nombre)));
 
-Tu tarea: agrupalos en TEMAS PRINCIPALES. 
-- Regla clave: variantes o usos de una misma partícula/estructura van JUNTOS como subtemas del mismo tema principal.
-- Ejemplo: "Uso 1 de の", "Uso 2 de の", "Uso 3 de の" → se agrupan en UN tema "Partícula の" con 3 subtemas.
-- Solo separás en temas distintos si son conceptos gramaticales completamente diferentes (ej: partícula の vs números vs saludos).
-
-Respondé SOLO en JSON sin markdown:
-{
-  "temas": [
-    {
-      "nombre": "nombre del tema principal",
-      "descripcion": "descripción breve",
-      "subtemas": [
-        {
-          "nombre": "nombre del subtema",
-          "descripcion": "descripción",
-          "ejemplos": ["ejemplo"]
-        }
-      ],
-      "vocabulario": ${JSON.stringify(parsedRaw.temas.flatMap(t => t.vocabulario || []))}
-    }
-  ]
-}
-
-Temas a consolidar: ${JSON.stringify(parsedRaw.temas, null, 2)}`
-        }]
-      }];
-      
-      try {
-        const consolidadoResult = await callClaude(consolidarPrompt);
-        const consolidado = JSON.parse(consolidadoResult.replace(/```json|```/g, '').trim());
-        parsed = { ...parsedRaw, temas: consolidado.temas };
-        console.log('Temas consolidados:', parsed.temas.length, parsed.temas.map(t => t.nombre));
-      } catch(e) {
-        console.warn('Consolidación falló, usando temas originales:', e);
-        parsed = parsedRaw;
+    // VALIDACIÓN POR CÓDIGO: agrupa subtemas detectados por Claude en 1 solo tema
+    function agruparTemas(temas) {
+      if (temas.length <= 1) return temas;
+      const esSubtema = t => /^(uso\s*\d|primer|segundo|tercer|cuart|quint|\d+[°º.]|preguntar|cómo preguntar|como preguntar|preguntas con|forma\s*\d)/i.test(t.nombre);
+      const todosSubtemas = temas.every(esSubtema);
+      if (todosSubtemas) {
+        const nombrePrincipal = (plan.clase || '').replace(/clase\s*\d+\s*[-–—:]/i,'').replace(/^[-–—:\s]+/,'').trim() || 'Tema principal';
+        return [{
+          nombre: nombrePrincipal,
+          subtemas: temas.map(t => ({ nombre: t.nombre, ejemplos: (t.subtemas||[]).flatMap(s=>s.ejemplos||[]) })),
+          vocabulario: [...new Set(temas.flatMap(t=>t.vocabulario||[]))]
+        }];
       }
+      const subs = temas.filter(esSubtema);
+      const normales = temas.filter(t => !esSubtema(t));
+      if (subs.length > 0 && normales.length > 0) {
+        const base = normales[0];
+        return [
+          {
+            nombre: base.nombre,
+            subtemas: [...(base.subtemas||[]), ...subs.map(t => ({ nombre: t.nombre, ejemplos: (t.subtemas||[]).flatMap(s=>s.ejemplos||[]) }))],
+            vocabulario: [...new Set([...(base.vocabulario||[]), ...subs.flatMap(t=>t.vocabulario||[])])]
+          },
+          ...normales.slice(1)
+        ];
+      }
+      return temas;
     }
+        const temasAgrupados = agruparTemas(plan.temas);
+    console.log('Plan después de agrupar:', JSON.stringify(temasAgrupados.map(t => ({nombre: t.nombre, subtemas: t.subtemas?.length || 0}))));
 
+    // PASO 3: Por cada tema principal → generar ejercicios (sin imágenes, usando el plan)
     state.generatedThemes = [];
-    const temas = parsed.temas;
     const container = document.getElementById('themes-container');
     container.innerHTML = '';
 
-    // PASO 2: Generar ejercicios por tema
-    for (let i = 0; i < temas.length; i++) {
-      const tema = temas[i];
-      const pct = 30 + Math.round(((i+1)/temas.length) * 60);
-      setProgress('generar', pct, `Generando ejercicios: ${tema.nombre}...`);
+    for (let i = 0; i < temasAgrupados.length; i++) {
+      const tema = temasAgrupados[i];
+      const pct = 40 + Math.round(((i+1)/plan.temas.length) * 55);
+      setProgress('generar', pct, `Generando ejercicios: ${tema.nombre} (${i+1}/${plan.temas.length})...`);
 
-      // Calcular total de ejercicios: 50 por subtema + 1 ejemplo
       const numSubtemas = (tema.subtemas || []).length || 1;
       const totalEjercicios = numSubtemas * 50 + 1;
-      const subtemasList = (tema.subtemas || []).map(s => `- ${s.nombre}: ${s.descripcion}. Ejemplos: ${(s.ejemplos||[]).join(' | ')}`).join('\n');
 
+      const subtemaDetalle = (tema.subtemas || []).map((s, idx) =>
+        `SECCIÓN ${idx+1} — ${s.nombre}:
+  Ejemplos de la clase: ${(s.ejemplos||[]).join(' | ')}
+  → Generá exactamente 50 ejercicios de este subtema`
+      ).join('
+
+');
+
+      // Este prompt NO incluye imágenes → mucho más barato en tokens
       const ejerciciosPrompt = [{
         role: 'user',
-        content: [
-          ...imageContent,
-          {
-            type: 'text',
-            text: `Sos un profesor de japonés experto. Basándote en esta clase de Komori Project, generá ejercicios sobre el tema principal: "${tema.nombre}".
+        content: [{
+          type: 'text',
+          text: `Sos un profesor de japonés experto creando material de práctica para un alumno de Komori Project Nivel 1.
 
-ESTRUCTURA:
-- 1 ejercicio resuelto (num: "00") como ejemplo general del tema
-- 50 ejercicios por cada subtema listado abajo, numerados correlativamente desde 01
-- Total: ${totalEjercicios} ejercicios
+TEMA PRINCIPAL: ${tema.nombre}
+VOCABULARIO: ${(tema.vocabulario||[]).join(', ')}
 
-SUBTEMAS (generá 50 ejercicios de cada uno, agrupados):
-${subtemasList}
+${subtemaDetalle}
 
-REGLAS:
-1. El ejercicio 00 está RESUELTO como ejemplo. Los demás NO tienen respuesta.
-2. Mezclá japonés→español y español→japonés.
-3. NO uses romaji. Solo japonés (hiragana/katakana/kanji) y español.
-4. Dentro de cada subtema: primeros ejercicios simples, últimos más complejos.
-5. Usá el vocabulario exacto de la clase.
-6. Incluí una sección de vocabulario al principio.
+INSTRUCCIONES GENERALES:
+- Ejercicio 00: RESUELTO como ejemplo de estructura (1 solo)
+- Ejercicios 01 en adelante: SIN respuesta, el alumno los completa
+- Total: ${totalEjercicios} ejercicios (1 resuelto + ${numSubtemas * 50} para resolver)
+- Mezclá japonés→español y español→japonés
+- NO uses romaji. Solo hiragana/katakana/kanji y español
+- Empezá simple, terminá complejo dentro de cada sección
+- Cada ejercicio debe tener el campo "subtema" con el nombre de su sección
 
-Vocabulario de la clase: ${tema.vocabulario.join(', ')}
-
-Respondé SOLO en JSON sin markdown:
+Respondé SOLO en JSON válido sin markdown:
 {
-  "titulo": "título del ejercicio",
-  "vocabulario": [{"jp": "palabra japonesa", "es": "significado"}],
+  "titulo": "${tema.nombre} — Ejercicios de práctica",
+  "vocabulario": [{"jp": "palabra", "es": "significado"}],
   "ejercicios": [
-    {
-      "num": "00",
-      "subtema": "nombre del subtema o General",
-      "tipo": "jp→es",
-      "enunciado": "texto en japonés",
-      "respuesta": "traducción al español (SOLO para el 00)",
-      "resuelto": true
-    },
-    {
-      "num": "01",
-      "subtema": "nombre del subtema",
-      "tipo": "jp→es",
-      "enunciado": "texto",
-      "respuesta": "",
-      "resuelto": false
-    }
+    {"num": "00", "subtema": "General", "tipo": "jp→es", "enunciado": "やまださんは トヨタの しゃいんです。", "respuesta": "El señor Yamada es empleado de Toyota.", "resuelto": true},
+    {"num": "01", "subtema": "${tema.subtemas?.[0]?.nombre || tema.nombre}", "tipo": "jp→es", "enunciado": "...", "respuesta": "", "resuelto": false}
   ]
 }`
-          }
-        ]
+        }]
       }];
 
-      const ejerciciosResult = await callClaude(ejerciciosPrompt);
+      const ejerciciosResult = await callClaude(ejerciciosPrompt, 'claude-haiku-4-5');
       let ejerciciosData;
       try {
         ejerciciosData = JSON.parse(ejerciciosResult.replace(/```json|```/g, '').trim());
       } catch(e) {
-        console.error('Error parseando tema:', tema.nombre, ejerciciosResult);
+        console.error('Error parseando ejercicios de:', tema.nombre, ejerciciosResult.substring(0, 200));
         continue;
       }
 
       state.generatedThemes.push({ tema: tema.nombre, data: ejerciciosData });
 
-      // Render card
       const card = document.createElement('div');
       card.className = 'theme-card';
       card.innerHTML = `
